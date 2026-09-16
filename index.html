@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Snake</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #1e1e1e;
+    color: #eee;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+  #hud {
+    display: flex;
+    gap: 24px;
+    font-size: 1.1rem;
+  }
+  canvas {
+    background: #111;
+    border: 2px solid #444;
+    image-rendering: pixelated;
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.6);
+    text-align: center;
+  }
+  #overlay.show { display: flex; }
+  #overlay button {
+    padding: 8px 18px;
+    font-size: 1rem;
+    cursor: pointer;
+    border: none;
+    border-radius: 4px;
+    background: #3a3;
+    color: #fff;
+  }
+  #hint {
+    font-size: 0.85rem;
+    color: #888;
+  }
+  #start-btn {
+    padding: 10px 30px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    cursor: pointer;
+    border: none;
+    border-radius: 6px;
+    background: #f5a623;
+    color: #1e1e1e;
+    box-shadow: 0 2px 8px rgba(245, 166, 35, 0.5);
+    transition: transform 0.08s ease, background 0.15s ease;
+  }
+  #start-btn:hover { background: #ffbb4d; }
+  #start-btn:active { transform: translateY(1px); }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <div>Score: <span id="score">0</span></div>
+    <div>Best: <span id="best">0</span></div>
+  </div>
+  <canvas id="game" width="400" height="400"></canvas>
+  <button id="start-btn">Start</button>
+  <div id="hint">Arrow keys / WASD to move &middot; Space or click Start to begin/pause</div>
+
+  <div id="overlay">
+    <h1 id="overlay-title">Game Over</h1>
+    <div id="overlay-score"></div>
+    <button id="restart">Play again</button>
+  </div>
+
+<script>
+(() => {
+  const GRID_SIZE = 20;
+  const TILE_COUNT = 20; // 400 / 20
+  const STEP_MS = 85;
+  const MAX_QUEUED_DIRS = 2;
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlay-title');
+  const overlayScore = document.getElementById('overlay-score');
+  const restartBtn = document.getElementById('restart');
+  const startBtn = document.getElementById('start-btn');
+
+  const BEST_KEY = 'snake-best-score';
+  // Some browsers block localStorage entirely for file:// pages (strict
+  // privacy mode, private browsing, certain extensions) and throw instead
+  // of just returning null. Don't let that take down the whole game.
+  let best = 0;
+  try {
+    best = Number(localStorage.getItem(BEST_KEY)) || 0;
+  } catch (e) {}
+  bestEl.textContent = best;
+
+  // state: 'ready' (waiting to start) | 'playing' | 'paused' | 'gameover'
+  let snake, dir, dirQueue, food, score, state, lastStep, rafId;
+
+  function reset() {
+    snake = [
+      { x: 10, y: 10 },
+      { x: 9, y: 10 },
+      { x: 8, y: 10 },
+    ];
+    dir = { x: 1, y: 0 };
+    dirQueue = [];
+    score = 0;
+    scoreEl.textContent = score;
+    state = 'ready';
+    placeFood();
+    overlay.classList.remove('show');
+    lastStep = performance.now();
+    updateStartButton();
+  }
+
+  function updateStartButton() {
+    if (state === 'gameover') {
+      startBtn.style.display = 'none';
+      return;
+    }
+    startBtn.style.display = 'inline-block';
+    startBtn.textContent = state === 'playing' ? 'Pause' : state === 'paused' ? 'Resume' : 'Start';
+  }
+
+  function placeFood() {
+    let pos;
+    do {
+      pos = {
+        x: Math.floor(Math.random() * TILE_COUNT),
+        y: Math.floor(Math.random() * TILE_COUNT),
+      };
+    } while (snake.some(s => s.x === pos.x && s.y === pos.y));
+    food = pos;
+  }
+
+  function endGame() {
+    state = 'gameover';
+    if (score > best) {
+      best = score;
+      try {
+        localStorage.setItem(BEST_KEY, String(best));
+      } catch (e) {}
+      bestEl.textContent = best;
+    }
+    overlayTitle.textContent = 'Game Over';
+    overlayScore.textContent = `Score: ${score}`;
+    overlay.classList.add('show');
+    updateStartButton();
+  }
+
+  function step() {
+    if (dirQueue.length) dir = dirQueue.shift();
+    const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+
+    if (
+      head.x < 0 || head.x >= TILE_COUNT ||
+      head.y < 0 || head.y >= TILE_COUNT ||
+      snake.some(s => s.x === head.x && s.y === head.y)
+    ) {
+      endGame();
+      return;
+    }
+
+    snake.unshift(head);
+
+    if (head.x === food.x && head.y === food.y) {
+      score += 1;
+      scoreEl.textContent = score;
+      placeFood();
+    } else {
+      snake.pop();
+    }
+  }
+
+  function draw() {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = '#e33';
+    ctx.fillRect(food.x * GRID_SIZE, food.y * GRID_SIZE, GRID_SIZE, GRID_SIZE);
+
+    snake.forEach((seg, i) => {
+      ctx.fillStyle = i === 0 ? '#4f4' : '#2a2';
+      ctx.fillRect(seg.x * GRID_SIZE + 1, seg.y * GRID_SIZE + 1, GRID_SIZE - 2, GRID_SIZE - 2);
+    });
+
+    if (state === 'paused') {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.font = '24px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Paused', canvas.width / 2, canvas.height / 2);
+    }
+
+    if (state === 'ready') {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 22px system-ui, sans-serif';
+      ctx.fillText('Press SPACE or click Start', canvas.width / 2, canvas.height / 2 - 12);
+      ctx.font = '15px system-ui, sans-serif';
+      ctx.fillStyle = '#ccc';
+      ctx.fillText('Arrow keys / WASD to move', canvas.width / 2, canvas.height / 2 + 16);
+    }
+  }
+
+  function loop(ts) {
+    if (state === 'playing' && ts - lastStep >= STEP_MS) {
+      lastStep = ts;
+      step();
+    }
+    draw();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  const KEY_DIRS = {
+    ArrowUp: { x: 0, y: -1 }, w: { x: 0, y: -1 }, W: { x: 0, y: -1 },
+    ArrowDown: { x: 0, y: 1 }, s: { x: 0, y: 1 }, S: { x: 0, y: 1 },
+    ArrowLeft: { x: -1, y: 0 }, a: { x: -1, y: 0 }, A: { x: -1, y: 0 },
+    ArrowRight: { x: 1, y: 0 }, d: { x: 1, y: 0 }, D: { x: 1, y: 0 },
+  };
+
+  function toggleStart() {
+    if (state === 'ready' || state === 'paused') {
+      state = 'playing';
+      lastStep = performance.now();
+    } else if (state === 'playing') {
+      state = 'paused';
+    }
+    updateStartButton();
+  }
+
+  startBtn.addEventListener('click', toggleStart);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === ' ') {
+      e.preventDefault();
+      toggleStart();
+      return;
+    }
+
+    const d = KEY_DIRS[e.key];
+    if (!d) return;
+    e.preventDefault();
+    if (dirQueue.length >= MAX_QUEUED_DIRS) return;
+
+    // Compare against whatever direction will be current when this one
+    // applies, so quick successive turns (e.g. up then left) both stick
+    // instead of the first being silently overwritten.
+    const projected = dirQueue.length ? dirQueue[dirQueue.length - 1] : dir;
+    if (d.x === -projected.x && d.y === -projected.y) return;
+    if (d.x === projected.x && d.y === projected.y) return;
+    dirQueue.push(d);
+  });
+
+  restartBtn.addEventListener('click', reset);
+
+  reset();
+  rafId = requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
